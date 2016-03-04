@@ -283,7 +283,7 @@ def make_ssh_wrapper(gerrit_user, gerrit_key):
 
 
 def create_gitlab_project(
-        gitlab_host, default_has_issues, default_has_wiki,
+        default_has_issues, default_has_wiki,
         gitlab_secure_config, options, project_path, description):
     created = False
     has_issues = 'has-issues' in options or default_has_issues
@@ -292,10 +292,14 @@ def create_gitlab_project(
     secure_config = ConfigParser.ConfigParser()
     secure_config.read(gitlab_secure_config)
 
+    gitlab_address = secure_config.get("gitlab", "gitlab_address")
+    gitlab_protocol = secure_config.get("gitlab", "gitlab_protocol")
+    gitlab_host = '%s://%s' % (gitlab_protocol, gitlab_address)
+
     # Project creation doesn't work via oauth
     glab = gitlab.Gitlab(gitlab_host)
-    glab.login(secure_config.get("gitlab", "username"),
-               secure_config.get("gitlab", "password"))
+    glab.login(secure_config.get("gitlab", "gerrit_username"),
+               secure_config.get("gitlab", "gerrit_passwd"))
     groups = glab.getgroups()
     groups_dict = dict(zip([g['path'].lower() for g in groups], groups))
 
@@ -564,7 +568,6 @@ def main():
                                                    'gerrit2')
     DEFAULT_HAS_ISSUES = registry.get_defaults('has-issues', False)
     DEFAULT_HAS_WIKI = registry.get_defaults('has-wiki', False)
-    GITLAB_HOST = registry.get_defaults('gitlab-host')
     GITLAB_SECURE_CONFIG = registry.get_defaults(
         'gitlab-config',
         '/etc/gitlab/gitlab-projects.secure.config')
@@ -656,7 +659,7 @@ def main():
 
                 if 'has-gitlab' in options or default_has_gitlab:
                     created = create_gitlab_project(
-                        GITLAB_HOST, DEFAULT_HAS_ISSUES,
+                        DEFAULT_HAS_ISSUES,
                         DEFAULT_HAS_WIKI, GITLAB_SECURE_CONFIG,
                         options, project, description)
                     if created and GERRIT_REPLICATE:
