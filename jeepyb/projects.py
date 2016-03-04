@@ -58,13 +58,13 @@ def is_no_launchpad_blueprints(project_full_name):
     return _is_no_launchpad(project_full_name, 'blueprints')
 
 
-def has_github(project_full_name):
+def has_gitlab(project_full_name):
     try:
-        if not registry.defaults.get('projects', 'has-github'):
-            # If the default is not to use GitHub...
+        if not registry.defaults.get('projects', 'has-gitlab'):
+            # If the default is not to use GitLab...
             try:
                 # ...then rely on the existence of a per-project option...
-                return 'has-github' in registry[project_full_name]['options']
+                return 'has-gitlab' in registry[project_full_name]['options']
             except KeyError:
                 # ...and if it's not set, then still don't use it.
                 return False

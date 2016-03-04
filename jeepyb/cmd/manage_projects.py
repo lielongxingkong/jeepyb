@@ -18,16 +18,14 @@
 # It should look like:
 
 # [projects]
-# homepage=http://openstack.org
 # gerrit-host=review.openstack.org
 # local-git-dir=/var/lib/git
 # gerrit-key=/home/gerrit2/review_site/etc/ssh_host_rsa_key
 # gerrit-committer=Project Creator <openstack-infra@lists.openstack.org>
 # gerrit-replicate=True
-# has-github=True
+# has-gitlab=True
 # has-wiki=False
 # has-issues=False
-# has-downloads=False
 # acl-dir=/home/gerrit2/acls
 # acl-base=/home/gerrit2/acls/project.config
 #
@@ -37,10 +35,8 @@
 #   options:
 #    - has-wiki
 #    - has-issues
-#    - has-downloads
 #    - has-pull-requests
 #    - track-upstream
-#   homepage: Some homepage that isn't http://openstack.org
 #   description: This is a great project
 #   upstream: https://gerrit.googlesource.com/gerrit
 #   upstream-prefix: upstream
@@ -61,7 +57,7 @@ import tempfile
 import time
 
 import gerritlib.gerrit
-import github
+import gitlab
 
 import jeepyb.gerritdb
 import jeepyb.log as l
@@ -286,56 +282,48 @@ def make_ssh_wrapper(gerrit_user, gerrit_key):
     return dict(GIT_SSH=name)
 
 
-def create_github_project(
-        default_has_issues, default_has_downloads, default_has_wiki,
-        github_secure_config, options, project, description, homepage):
+def create_gitlab_project(
+        gitlab_host, default_has_issues, default_has_wiki,
+        gitlab_secure_config, options, project_path, description):
     created = False
     has_issues = 'has-issues' in options or default_has_issues
-    has_downloads = 'has-downloads' in options or default_has_downloads
     has_wiki = 'has-wiki' in options or default_has_wiki
 
     secure_config = ConfigParser.ConfigParser()
-    secure_config.read(github_secure_config)
+    secure_config.read(gitlab_secure_config)
 
     # Project creation doesn't work via oauth
-    ghub = github.Github(secure_config.get("github", "username"),
-                         secure_config.get("github", "password"))
-    orgs = ghub.get_user().get_orgs()
-    orgs_dict = dict(zip([o.login.lower() for o in orgs], orgs))
+    glab = gitlab.Gitlab(gitlab_host)
+    glab.login(secure_config.get("gitlab", "username"),
+               secure_config.get("gitlab", "password"))
+    groups = glab.getgroups()
+    groups_dict = dict(zip([g['path'].lower() for g in groups], groups))
 
     # Find the project's repo
-    project_split = project.split('/', 1)
-    org_name = project_split[0]
+    project_split = project_path.split('/', 1)
+    namespace_name = project_split[0]
     if len(project_split) > 1:
-        repo_name = project_split[1]
+        project_name = project_split[1]
     else:
-        repo_name = project
+        project_name = project_path
 
     try:
-        org = orgs_dict[org_name.lower()]
+        group = groups_dict[namespace_name.lower()]
     except KeyError:
-        # We do not have control of this github org ignore the project.
+        # We do not have control of this gitlab group ignore the project.
         return False
-    try:
-        repo = org.get_repo(repo_name)
-    except github.GithubException:
-        repo = org.create_repo(repo_name,
-                               homepage=homepage,
-                               has_issues=has_issues,
-                               has_downloads=has_downloads,
-                               has_wiki=has_wiki)
-        if description:
-            repo.edit(repo_name, description=description)
-        if homepage:
-            repo.edit(repo_name, homepage=homepage)
-        repo.edit(repo_name, has_issues=has_issues,
-                  has_downloads=has_downloads,
-                  has_wiki=has_wiki)
 
-        if 'gerrit' not in [team.name for team in repo.get_teams()]:
-            teams = org.get_teams()
-            teams_dict = dict(zip([t.name.lower() for t in teams], teams))
-            teams_dict['gerrit'].add_to_repos(repo)
+    project = glab.getproject(project_path)
+    if not project:
+        project = glab.createproject(project_name,
+                               namespace_id=group['id'],
+                               issues_enabled=has_issues,
+                               wiki_enabled=has_wiki)
+        if description:
+            glab.editproject(project['id'], description=description)
+        glab.editproject(project['id'], issues_enabled=has_issues,
+                  wiki_enabled=has_wiki)
+
         created = True
 
     return created
@@ -558,7 +546,7 @@ def main():
     args = parser.parse_args()
     l.configure_logging(args)
 
-    default_has_github = registry.get_defaults('has-github', True)
+    default_has_gitlab = registry.get_defaults('has-gitlab', True)
 
     LOCAL_GIT_DIR = registry.get_defaults('local-git-dir', '/var/lib/git')
     JEEPYB_CACHE_DIR = registry.get_defaults('jeepyb-cache-dir',
@@ -574,13 +562,12 @@ def main():
                                                   'gerrit2')
     GERRIT_OS_SYSTEM_GROUP = registry.get_defaults('gerrit-system-group',
                                                    'gerrit2')
-    DEFAULT_HOMEPAGE = registry.get_defaults('homepage')
     DEFAULT_HAS_ISSUES = registry.get_defaults('has-issues', False)
-    DEFAULT_HAS_DOWNLOADS = registry.get_defaults('has-downloads', False)
     DEFAULT_HAS_WIKI = registry.get_defaults('has-wiki', False)
-    GITHUB_SECURE_CONFIG = registry.get_defaults(
-        'github-config',
-        '/etc/github/github-projects.secure.config')
+    GITLAB_HOST = registry.get_defaults('gitlab-host')
+    GITLAB_SECURE_CONFIG = registry.get_defaults(
+        'gitlab-config',
+        '/etc/gitlab/gitlab-projects.secure.config')
 
     gerrit = gerritlib.gerrit.Gerrit(GERRIT_HOST,
                                      GERRIT_USER,
@@ -601,7 +588,6 @@ def main():
                 # Figure out all of the options
                 options = section.get('options', dict())
                 description = section.get('description', None)
-                homepage = section.get('homepage', DEFAULT_HOMEPAGE)
                 upstream = section.get('upstream', None)
                 upstream_prefix = section.get('upstream-prefix', None)
                 track_upstream = 'track-upstream' in options
@@ -668,11 +654,11 @@ def main():
                         acl_config, project, ACL_DIR, section,
                         remote_url, repo_path, ssh_env, gerrit, GERRIT_GITID)
 
-                if 'has-github' in options or default_has_github:
-                    created = create_github_project(
-                        DEFAULT_HAS_ISSUES, DEFAULT_HAS_DOWNLOADS,
-                        DEFAULT_HAS_WIKI, GITHUB_SECURE_CONFIG,
-                        options, project, description, homepage)
+                if 'has-gitlab' in options or default_has_gitlab:
+                    created = create_gitlab_project(
+                        GITLAB_HOST, DEFAULT_HAS_ISSUES,
+                        DEFAULT_HAS_WIKI, GITLAB_SECURE_CONFIG,
+                        options, project, description)
                     if created and GERRIT_REPLICATE:
                         gerrit.replicate(project)
 
